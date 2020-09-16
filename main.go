@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"html/template"
 	"io"
@@ -16,6 +17,8 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/Masterminds/sprig"
+	"github.com/d5/tengo/v2"
+	"github.com/d5/tengo/v2/stdlib"
 	"github.com/google/shlex"
 	"github.com/spf13/cobra"
 )
@@ -54,7 +57,7 @@ func run(cmd *cobra.Command, args []string) {
 		defaultValues      = cmd.Flag("default-values").Value.String()
 	)
 
-	valuePath, templatesPath := tplPaths(ska, args[0])
+	valuePath, scriptPath, templatesPath := tplPaths(ska, args[0])
 
 	out, err := filepath.Abs(out)
 	if err != nil {
@@ -72,11 +75,40 @@ func run(cmd *cobra.Command, args []string) {
 		values = readValuesFromTempFile(valuePath, editor)
 	}
 
+	values, err = applyScript(scriptPath, values)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	if err != nil && !os.IsNotExist(err) {
 		must(err)
 	}
 
 	must(walk(templatesPath, out, values, gen))
+}
+
+func applyScript(scriptPath string, values map[string]interface{}) (map[string]interface{}, error) {
+	scriptFile, err := filepath.Abs(scriptPath)
+	if err != nil {
+		return values, err
+	}
+	scriptContent, err := ioutil.ReadFile(scriptFile)
+	if err != nil {
+		return values, err
+	}
+	script := tengo.NewScript(scriptContent)
+	err = script.Add("values", values)
+	script.SetImports(stdlib.GetModuleMap("text", "enum"))
+	if err != nil {
+		return values, err
+	}
+
+	compiled, err := script.RunContext(context.Background())
+	if err != nil {
+		return values, err
+	}
+
+	return compiled.Get("values").Map(), nil
 }
 
 func readValuesFromPath(valuePath string) map[string]interface{} {
@@ -125,10 +157,10 @@ func readValuesFromTempFile(valuePath, editor string) map[string]interface{} {
 }
 
 // tplPaths returns values.toml path (vp) and templates dir path (tp).
-func tplPaths(ska, tpl string) (vp, tp string) {
+func tplPaths(ska, tpl string) (vp, sp, tp string) {
 	tplf := fmt.Sprintf("%s/%s", ska, tpl)
 
-	return fmt.Sprintf("%s/values.toml", tplf), fmt.Sprintf("%s/templates", tplf)
+	return fmt.Sprintf("%s/values.toml", tplf), fmt.Sprintf("%s/script.tengo", tplf), fmt.Sprintf("%s/templates", tplf)
 }
 
 // vals decodes path and return map of values with error.
